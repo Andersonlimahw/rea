@@ -201,6 +201,59 @@ it("completes large class inventories with exact case-sensitive search semantics
   await provider.close();
 });
 
+it("keeps the first occurrence of classes duplicated across dex files and records the count as a limitation", async () => {
+  const { service, apk, provider } = await setup("duplicate-classes");
+  const result = await service.execute("search_android_classes", {
+    path: apk,
+    query: "fixture.Class",
+  });
+  if (!result.ok) throw result.error;
+  const inventory = androidResultSchemas.search_android_classes.parse(
+    result.value.normalized_result,
+  );
+  expect(inventory.total_classes).toBe(401);
+  expect(inventory.matches).toHaveLength(400);
+  expect(inventory.matches.slice(0, 2)).toEqual([
+    "fixture.Class0",
+    "fixture.Class1",
+  ]);
+  expect(new Set(inventory.matches).size).toBe(inventory.matches.length);
+  expect(result.value.limitations).toContainEqual(
+    expect.stringContaining("duplicate entries ignored: 2"),
+  );
+  expect(result.value.raw_result).toMatchObject({
+    loaded: { class_count: 403 },
+  });
+  await provider.close();
+});
+
+it("does not report a duplicate limitation when the inventory has no duplicates", async () => {
+  const { service, apk, provider } = await setup();
+  const result = await service.execute("search_android_classes", {
+    path: apk,
+    query: "fixture.Class",
+  });
+  if (!result.ok) throw result.error;
+  expect(result.value.limitations.join("\n")).not.toContain("duplicate");
+  await provider.close();
+});
+
+it("still rejects a class inventory that differs from the loaded class count", async () => {
+  const { service, apk, provider } = await setup("class-count-mismatch");
+  const result = await service.execute("search_android_classes", {
+    path: apk,
+    query: "",
+  });
+  expect(result).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "AnalysisOutputError",
+      reason: expect.stringContaining("differs from the loaded class count"),
+    },
+  });
+  await provider.close();
+});
+
 it("close cancels active and queued work and prevents later acquisition", async () => {
   const { service, apk, launches, provider } = await setup("stall");
   const active = service.execute("inspect_android_package", { path: apk });

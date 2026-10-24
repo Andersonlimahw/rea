@@ -35,6 +35,17 @@ type Engine = z.infer<
 >["engine"];
 type ClassSummary = z.infer<typeof jadxClassSchema>;
 
+/** Normalized provider result plus observation-specific Evidence limitations. */
+export interface JadxAnalysisOutcome {
+  readonly result: JsonValue;
+  readonly limitations: readonly string[];
+}
+
+const withoutLimitations = (result: JsonValue): JadxAnalysisOutcome => ({
+  result,
+  limitations: [],
+});
+
 const methodsOf = (summary: ClassSummary) => {
   const seen = new Map<string, number>();
   return summary.methods.map((method) => {
@@ -135,7 +146,7 @@ const searchClasses = async (
   request: Extract<AndroidRequest, { operation: "search_android_classes" }>,
   loaded: z.infer<typeof jadxLoadSchema>,
   engine: Engine,
-): Promise<JsonValue> => {
+): Promise<JadxAnalysisOutcome> => {
   const classes: string[] = [];
   const pageSize = 4096;
   let total: number | undefined;
@@ -167,18 +178,31 @@ const searchClasses = async (
         "JADX class pagination is incomplete",
       );
   } while (classes.length < total);
-  if (new Set(classes).size !== classes.length || total !== loaded.class_count)
+  if (total !== loaded.class_count)
     throw new AnalysisOutputError(
       request.operation,
-      "JADX class inventory is duplicated or differs from the loaded class count",
+      "JADX class inventory differs from the loaded class count",
     );
-  return androidResultSchemas.search_android_classes.parse({
-    engine,
-    query: request.input.query,
-    total_classes: total,
-    matches: classes.filter((name) => name.includes(request.input.query)),
-    coverage: "complete",
-  });
+  // Multi-dex APKs may legitimately define one class name in several dex
+  // files; JADX lists each occurrence. Keep the first occurrence of every
+  // name (inventory order is preserved) instead of rejecting the inventory.
+  const unique = [...new Set(classes)];
+  const duplicates = classes.length - unique.length;
+  return {
+    result: androidResultSchemas.search_android_classes.parse({
+      engine,
+      query: request.input.query,
+      total_classes: unique.length,
+      matches: unique.filter((name) => name.includes(request.input.query)),
+      coverage: "complete",
+    }),
+    limitations:
+      duplicates === 0
+        ? []
+        : [
+            `The JADX class inventory listed ${classes.length} entries but only ${unique.length} distinct class names; duplicate entries ignored: ${duplicates} (the same class name defined in more than one dex file). The first occurrence of each name was kept, and total_classes and matches count distinct names.`,
+          ],
+  };
 };
 
 const matchingMethods = (
@@ -274,26 +298,32 @@ export const analyzeJadxRequest = async (
   request: AndroidRequest,
   loaded: z.infer<typeof jadxLoadSchema>,
   engine: Engine,
-): Promise<JsonValue> => {
+): Promise<JadxAnalysisOutcome> => {
   if (request.operation === "inspect_android_package")
-    return inspectPackage(tools, loaded, engine);
+    return withoutLimitations(await inspectPackage(tools, loaded, engine));
   if (request.operation === "search_android_classes")
     return searchClasses(tools, request, loaded, engine);
   const summary = await classSummary(tools, request);
   if (request.operation === "inspect_android_class")
-    return androidResultSchemas.inspect_android_class.parse({
-      engine,
-      class_name: summary.full_name,
-      methods: methodsOf(summary),
-      fields: summary.fields.map((field) => ({
-        name: field.name,
-        reported_type: field.type,
-      })),
-      inner_classes: summary.inner_classes,
-    });
+    return withoutLimitations(
+      androidResultSchemas.inspect_android_class.parse({
+        engine,
+        class_name: summary.full_name,
+        methods: methodsOf(summary),
+        fields: summary.fields.map((field) => ({
+          name: field.name,
+          reported_type: field.type,
+        })),
+        inner_classes: summary.inner_classes,
+      }),
+    );
   if (request.operation === "inspect_android_method")
-    return inspectMethod(tools, request, summary, engine);
-  return traceReferences(tools, request, summary, engine);
+    return withoutLimitations(
+      await inspectMethod(tools, request, summary, engine),
+    );
+  return withoutLimitations(
+    await traceReferences(tools, request, summary, engine),
+  );
 };
 
 const traceReferences = async (

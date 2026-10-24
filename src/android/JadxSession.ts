@@ -141,8 +141,8 @@ export class JadxSession {
         heap_limit_mib:
           Math.floor(runtime.max_heap_bytes / (1024 * 1024)) || null,
       } as const;
-      const result = await analyzeJadxRequest(tools, request, loaded, engine);
-      return createAnalysisExecution(result, JADX_PROVIDER_IDENTITY, {
+      const outcome = await analyzeJadxRequest(tools, request, loaded, engine);
+      return createAnalysisExecution(outcome.result, JADX_PROVIDER_IDENTITY, {
         rawResult: {
           server,
           bridge_sha256: context.bridgeHash,
@@ -151,7 +151,7 @@ export class JadxSession {
           calls: this.#observedCalls,
         },
         subject: target,
-        limitations: JADX_LIMITATIONS,
+        limitations: [...JADX_LIMITATIONS, ...outcome.limitations],
         locations:
           request.operation === "inspect_android_package"
             ? [{ kind: "artifact-path", path: "AndroidManifest.xml" }]
