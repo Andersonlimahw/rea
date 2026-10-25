@@ -26,6 +26,8 @@ const classes = [
     { length: generatedCount },
     (_, index) => `fixture.Class${index}`,
   ),
+  // A multi-dex APK may define one class in several dex files.
+  ...(mode === "duplicate-classes" ? ["fixture.Class0", "fixture.Class1"] : []),
 ];
 const methods = [
   {
@@ -65,7 +67,8 @@ register("load_apk", async ({ path }) => {
   return json({
     state: "LOADED",
     apk_path: mode === "wrong-apk" ? "/different.apk" : path,
-    class_count: classes.length,
+    class_count:
+      mode === "class-count-mismatch" ? classes.length + 1 : classes.length,
     resource_count: 1,
     threads: 1,
     resources: "full",
